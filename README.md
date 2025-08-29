@@ -1,1 +1,1 @@
-# TestIngestSdkV2
+# Test Kusto.Ingest SDK v2
