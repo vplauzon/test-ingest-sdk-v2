@@ -4,7 +4,6 @@ using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Specialized;
 using Kusto.Data.Common;
 using Kusto.Ingest.V2;
-using Microsoft.VisualBasic;
 using System.Collections.Immutable;
 
 namespace TestIngestSdkV2
@@ -13,12 +12,64 @@ namespace TestIngestSdkV2
     {
         static async Task Main(string[] args)
         {
+            //await IngestMultipleBlobsAsync(20);
+            await IngestStreamingAsync(20);
+        }
+
+        private static async Task IngestStreamingAsync(int blobCount)
+        {
+            var credential = new AzureCliCredential();
+            var kustoUri = Environment.GetEnvironmentVariable("kustoStreamUri");
+
+            if (string.IsNullOrEmpty(kustoUri))
+            {
+                Console.WriteLine("Please set 'kustoStreamUri' environment variable");
+            }
+            else
+            {
+                (var clusterUri, var database, var table) = AnalyzeKustoUri(kustoUri);
+                var streamingClient = StreamingIngestClientBuilder.Create(clusterUri)
+                    .WithAuthentication(credential)
+                    .Build();
+                var random = new Random();
+
+                using (var stream = new MemoryStream())
+                using (var writer = new StreamWriter(stream))
+                {
+                    var payload = $@"
+{{
+    ""widgetId"" : ""{random.NextInt64(10, 10000)}""
+}}
+";
+                    writer.Write(payload);
+                    writer.Flush();
+                    stream.Flush();
+                    stream.Position = 0;
+
+                    using (var source = new StreamSource(
+                        stream,
+                        DataSourceCompressionType.None,
+                        DataSourceFormat.json))
+                    {
+                        await streamingClient.IngestAsync(source, database, table);
+                    }
+                }
+            }
+        }
+
+        private static async Task IngestMultipleBlobsAsync(int blobCount)
+        {
+            var credential = new AzureCliCredential();
+            var kustoUri = Environment.GetEnvironmentVariable("kustoQueuedUri");
             var blobsPrefixUrl = Environment.GetEnvironmentVariable("blobsPrefixUrl");
             var blobsSuffix = Environment.GetEnvironmentVariable("blobsSuffix") ?? string.Empty;
-            var blobsSas = Environment.GetEnvironmentVariable("blobSas") ?? string.Empty;
-            var kustoUri = Environment.GetEnvironmentVariable("kustoUri");
+            var blobsSas = Environment.GetEnvironmentVariable("blobSas");
 
-            if (string.IsNullOrEmpty(blobsPrefixUrl))
+            if (string.IsNullOrEmpty(kustoUri))
+            {
+                Console.WriteLine("Please set 'kustoQueuedUri' environment variable");
+            }
+            else if (string.IsNullOrEmpty(blobsPrefixUrl))
             {
                 Console.WriteLine("Please set 'blobsPrefixUrl' environment variable");
             }
@@ -26,15 +77,10 @@ namespace TestIngestSdkV2
             {
                 Console.WriteLine("Please set 'blobsSas' environment variable");
             }
-            else if (string.IsNullOrEmpty(kustoUri))
-            {
-                Console.WriteLine("Please set 'kustoUri' environment variable");
-            }
             else
             {
-                var credential = new AzureCliCredential();
-                var blobUris = await FetchBlobs(credential, blobsPrefixUrl, blobsSuffix, 500);
                 (var clusterUri, var database, var table) = AnalyzeKustoUri(kustoUri);
+                var blobUris = await FetchBlobs(credential, blobsPrefixUrl, blobsSuffix, 500);
                 var ingestClient = QueuedIngestClientBuilder.Create(clusterUri)
                     .WithAuthentication(credential)
                     .Build();
@@ -42,100 +88,43 @@ namespace TestIngestSdkV2
                 {
                     EnableTracking = true
                 };
+                var ingestedBlobs = blobUris
+                    .Take(blobCount);
 
-                //await IngestOneBlob(
-                //    database, table, ingestClient, blobUris, blobsSas, properties);
-                await IngestMultipleBlobs(
-                    database, table, ingestClient, blobUris, blobsSas, properties, 20);
-            }
-        }
-
-        private static async Task IngestMultipleBlobs(
-            string database,
-            string table,
-            IMultiIngest ingestClient,
-            IEnumerable<Uri> blobUris,
-            string blobsSas,
-            IngestProperties properties,
-            int blobCount)
-        {
-            var ingestedBlobs = blobUris
-                .Take(blobCount);
-
-            foreach (var uri in ingestedBlobs)
-            {
-                Console.WriteLine(uri);
-            }
-
-            var blobSources = ingestedBlobs
-                .Select(u => new BlobSource($"{u}{blobsSas}", DataSourceFormat.parquet));
-            var operation = await ingestClient.IngestAsync(blobSources, database, table, properties);
-            var operationString = operation.ToJsonString();
-            var startTime = DateTime.Now;
-
-            Console.WriteLine($"Operation ID:  {operation.Id}");
-
-            while (true)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1));
-
-                var summary = await ingestClient.GetOperationSummaryAsync(
-                    IngestionOperation.FromJsonString(operationString));
-
-                Console.WriteLine(
-                    $"Waiting for ingestion ({summary.Status} ; {DateTime.Now - startTime}):  " +
-                    $"{summary.InProgressCount} in progress, " +
-                    $"{summary.FailedCount} failed & {summary.SucceededCount} succeeded");
-
-                switch(summary.Status)
+                foreach (var uri in ingestedBlobs)
                 {
-                    case IngestStatus.Failed:
-                        Console.WriteLine("Ingestion failure!");
-                        return;
-                    case IngestStatus.Succeeded:
-                        Console.WriteLine("Success!");
-                        return;
+                    Console.WriteLine(uri);
                 }
-            }
-        }
 
-        private static async Task IngestOneBlob(
-            string database,
-            string table,
-            IMultiIngest ingestClient,
-            IEnumerable<Uri> blobUris,
-            string blobsSas,
-            IngestProperties properties)
-        {
-            var blobSource = new BlobSource(
-                $"{blobUris.First()}{blobsSas}",
-                DataSourceFormat.parquet);
-            var operation = await ingestClient.IngestAsync(blobSource, database, table, properties);
-            var operationString = operation.ToJsonString();
-            var startTime = DateTime.Now;
+                var blobSources = ingestedBlobs
+                    .Select(u => new BlobSource($"{u}{blobsSas}", DataSourceFormat.parquet));
+                var operation = await ingestClient.IngestAsync(blobSources, database, table, properties);
+                var operationString = operation.ToJsonString();
+                var startTime = DateTime.Now;
 
-            Console.WriteLine($"Operation ID:  {operation.Id}");
+                Console.WriteLine($"Operation ID:  {operation.Id}");
 
-            while (true)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1));
-
-                Console.WriteLine($"Waiting for ingestion...  {DateTime.Now - startTime}");
-
-                var summary = await ingestClient.GetOperationSummaryAsync(
-                    IngestionOperation.FromJsonString(operationString));
-
-                if (summary.FailedCount > 0)
+                while (true)
                 {
-                    Console.WriteLine("Ingestion failure!");
+                    await Task.Delay(TimeSpan.FromSeconds(1));
 
-                    return;
-                }
-                else if (summary.SucceededCount > 0)
-                {
-                    Console.WriteLine("Success!");
+                    var summary = await ingestClient.GetOperationSummaryAsync(
+                        IngestionOperation.FromJsonString(operationString));
 
-                    return;
+                    Console.WriteLine(
+                        $"Waiting for ingestion ({summary.Status} ; {DateTime.Now - startTime}):  " +
+                        $"{summary.InProgressCount} in progress, " +
+                        $"{summary.FailedCount} failed & {summary.SucceededCount} succeeded");
+
+                    switch (summary.Status)
+                    {
+                        case IngestStatus.Failed:
+                            Console.WriteLine("Ingestion failure!");
+                            return;
+                        case IngestStatus.Succeeded:
+                            Console.WriteLine("Success!");
+                            return;
+                    }
                 }
             }
         }
