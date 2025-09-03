@@ -34,16 +34,16 @@ namespace TestIngestSdkV2
                 var random = new Random();
 
                 using (var stream = new MemoryStream())
-                using (var writer = new StreamWriter(stream))
                 {
-                    var payload = $@"
+                    using (var writer = new StreamWriter(stream, leaveOpen: true))
+                    {
+                        var payload = $@"
 {{
     ""widgetId"" : ""{random.NextInt64(10, 10000)}""
 }}
 ";
-                    writer.Write(payload);
-                    writer.Flush();
-                    stream.Flush();
+                        writer.Write(payload);
+                    }
                     stream.Position = 0;
 
                     using (var source = new StreamSource(
