@@ -84,6 +84,7 @@ namespace TestIngestSdkV2
                     .WithAuthentication(credential)
                     .Build();
                 IEnumerable<Task> tasks = Array.Empty<Task>();
+                var streamCount = 0;
 
                 foreach (var stream in streams)
                 {
@@ -104,6 +105,8 @@ namespace TestIngestSdkV2
                             .Where(s => s.Status != TaskStatus.Running);
 
                         await Task.WhenAll(notRunnings.Select(o => o.Task));
+                        streamCount += notRunnings.Count();
+                        Console.WriteLine($"Stream count:  {streamCount}");
                         tasks = snapshot
                             .Where(s => s.Status == TaskStatus.Running)
                             .Select(s => s.Task)
