@@ -14,7 +14,7 @@ namespace TestIngestSdkV2
         static async Task Main(string[] args)
         {
             //await IngestMultipleBlobsAsync(20);
-            await IngestStreamingAsync(GenerateStream(500, 20000), 75);
+            await IngestStreamingAsync(true, GenerateStream(500, 20000), 75);
         }
 
         private static IEnumerable<Stream> GenerateStream(int iterationCount, int rowCountPerStream)
@@ -56,6 +56,7 @@ namespace TestIngestSdkV2
         }
 
         private static async Task IngestStreamingAsync(
+            bool isManaged,
             IEnumerable<Stream> streams,
             int parallelStream)
         {
@@ -80,7 +81,11 @@ namespace TestIngestSdkV2
             else
             {
                 (var clusterUri, var database, var table) = AnalyzeKustoUri(kustoUri);
-                var streamingClient = StreamingIngestClientBuilder.Create(clusterUri)
+                var streamingClient = isManaged
+                    ? ManagedStreamingIngestClientBuilder.Create(clusterUri)
+                    .WithAuthentication(credential)
+                    .Build()
+                    : StreamingIngestClientBuilder.Create(clusterUri)
                     .WithAuthentication(credential)
                     .Build();
                 IEnumerable<Task> tasks = Array.Empty<Task>();
