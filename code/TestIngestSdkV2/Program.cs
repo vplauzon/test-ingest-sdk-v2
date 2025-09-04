@@ -5,6 +5,7 @@ using Azure.Storage.Blobs.Specialized;
 using Kusto.Data.Common;
 using Kusto.Ingest.V2;
 using System.Collections.Immutable;
+using System.Threading.Tasks;
 
 namespace TestIngestSdkV2
 {
@@ -13,11 +14,62 @@ namespace TestIngestSdkV2
         static async Task Main(string[] args)
         {
             //await IngestMultipleBlobsAsync(20);
-            await IngestStreamingAsync(20);
+            await IngestStreamingAsync(GenerateStream(500, 20000), 100);
         }
 
-        private static async Task IngestStreamingAsync(int blobCount)
+        private static IEnumerable<Stream> GenerateStream(int iterationCount, int rowCountPerStream)
         {
+            var random = new Random();
+
+            for (var i = 0; i != iterationCount; ++i)
+            {
+                var stream = new MemoryStream();
+
+                using (var writer = new StreamWriter(stream, leaveOpen: true))
+                {
+                    for (var j = 0; j != rowCountPerStream; ++j)
+                    {
+                        var statusRandom = random.Next(100);
+                        var status = statusRandom < 10
+                            ? "Critical"
+                            : statusRandom < 35
+                            ? "Warning"
+                            : "Normal";
+                        var payload = $@"
+{{
+    ""WidgetId"" : ""{random.NextInt64(10, 10000)}"",
+    ""Timestamp"" : ""{DateTime.Now}"",
+    ""Status"" : ""{status}"",
+    ""Temperature"" : {random.NextDouble() * 50 + 15},
+    ""Pressure"" : {random.NextDouble() * 20 + 80},
+    ""Latitude"" : {random.NextDouble() * 180 - 90},
+    ""Longitude"" : {random.NextDouble() * 360 - 180}
+}}
+";
+                        writer.Write(payload);
+                    }
+                }
+                stream.Position = 0;
+
+                yield return stream;
+            }
+        }
+
+        private static async Task IngestStreamingAsync(
+            IEnumerable<Stream> streams,
+            int parallelStream)
+        {
+            async Task PushStreamAsync(Stream stream, IIngest client, string database, string table)
+            {
+                using (var source = new StreamSource(
+                    stream,
+                    DataSourceCompressionType.None,
+                    DataSourceFormat.multijson))
+                {
+                    var operation = await client.IngestAsync(source, database, table);
+                }
+            }
+
             var credential = new AzureCliCredential();
             var kustoUri = Environment.GetEnvironmentVariable("kustoStreamUri");
 
@@ -31,27 +83,31 @@ namespace TestIngestSdkV2
                 var streamingClient = StreamingIngestClientBuilder.Create(clusterUri)
                     .WithAuthentication(credential)
                     .Build();
-                var random = new Random();
+                IEnumerable<Task> tasks = Array.Empty<Task>();
 
-                using (var stream = new MemoryStream())
+                foreach (var stream in streams)
                 {
-                    using (var writer = new StreamWriter(stream, leaveOpen: true))
+                    tasks = tasks.Append(
+                        PushStreamAsync(stream, streamingClient, database, table));
+                    while (tasks.Count() >= parallelStream)
                     {
-                        var payload = $@"
-{{
-    ""widgetId"" : ""{random.NextInt64(10, 10000)}""
-}}
-";
-                        writer.Write(payload);
-                    }
-                    stream.Position = 0;
+                        await Task.WhenAny(tasks);
 
-                    using (var source = new StreamSource(
-                        stream,
-                        DataSourceCompressionType.None,
-                        DataSourceFormat.json))
-                    {
-                        await streamingClient.IngestAsync(source, database, table);
+                        var snapshot = tasks
+                            .Select(t => new
+                            {
+                                Task = t,
+                                t.Status
+                            })
+                            .ToImmutableArray();
+                        var notRunnings = snapshot
+                            .Where(s => s.Status != TaskStatus.Running);
+
+                        await Task.WhenAll(notRunnings.Select(o => o.Task));
+                        tasks = snapshot
+                            .Where(s => s.Status == TaskStatus.Running)
+                            .Select(s => s.Task)
+                            .ToImmutableList();
                     }
                 }
             }
