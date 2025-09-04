@@ -14,7 +14,7 @@ namespace TestIngestSdkV2
         static async Task Main(string[] args)
         {
             //await IngestMultipleBlobsAsync(20);
-            await IngestStreamingAsync(GenerateStream(500, 20000), 5);
+            await IngestStreamingAsync(GenerateStream(500, 20000), 15);
         }
 
         private static IEnumerable<Stream> GenerateStream(int iterationCount, int rowCountPerStream)
